@@ -290,20 +290,14 @@ def train_models(df):
     if 'target' not in df.columns:
         raise ValueError("La colonne 'target' est manquante dans le fichier CSV")
     
-    # Afficher un warning si des colonnes sont manquantes (visible dans les logs Streamlit)
-    missing_cols = [col for col in expected_features if col not in df.columns]
-    if missing_cols:
-        st.warning(f"⚠️ Colonnes manquantes dans le CSV : {missing_cols}")
-        st.info(f"Colonnes disponibles : {df.columns.tolist()}")
-    
     # Préparation des données avec les colonnes disponibles uniquement
     X = df[available_features].copy()
     y = df['target'].copy()
     
-    # Suppression des colonnes entièrement vides
-    X = X.dropna(axis=1, how='all')
-    
-    # Mise à jour réelle des features après suppression
+    # Suppression des colonnes avec trop de valeurs manquantes (>50%)
+    missing_percent = X.isnull().mean()
+    cols_to_keep = missing_percent[missing_percent < 0.5].index.tolist()
+    X = X[cols_to_keep]
     available_features = X.columns.tolist()
     
     # Gestion des valeurs manquantes
@@ -347,13 +341,13 @@ def train_models(df):
         })
         trained[name] = (model, y_prob, y_pred)
     
-    # Retourner available_features au lieu de expected_features
+    # Retourner available_features
     return pd.DataFrame(results), trained, scaler, imputer, X_test_sc, y_test, available_features
 
 # Chargement des données
 df_original = load_data()
 
-# Affichage des colonnes pour debug (à retirer après)
+# Afficher les colonnes disponibles (debug - à retirer plus tard)
 st.write("📊 **Colonnes disponibles dans le dataset :**")
 st.write(df_original.columns.tolist())
 
@@ -363,6 +357,11 @@ CHOL_BASE   = df_original['chol'].mean()
 
 # Entraînement des modèles
 results_df, trained_models, scaler_train, imputer_train, X_test_sc, y_test, feature_names = train_models(df_original)
+
+# Vérifier que feature_names a 13 colonnes
+if len(feature_names) != 13:
+    st.warning(f"⚠️ Attention : {len(feature_names)} features trouvées au lieu de 13. Certaines colonnes pourraient être manquantes.")
+
 best_model = results_df.sort_values('AUC', ascending=False).iloc[0]['Modele']
 hex_colors = ['#e63946','#3498db','#00c853','#f39c12','#9b59b6','#1abc9c']
 
@@ -453,12 +452,33 @@ with tab1:
     slope_num   = {"Ascendante":0,"Plate":1,"Descendante":2}[slope]
     thal_num    = {"Normal":3,"Fixe":6,"Réversible":7}[thal]
 
-    input_df = pd.DataFrame(
-        [[age,sex_num,cp_num,trestbps,chol,fbs_num,
-          restecg_num,thalach,exang_num,oldpeak,slope_num,ca,thal_num]],
-        columns=feature_names
-    )
-    input_scaled = scaler_train.transform(imputer_train.transform(input_df))
+    # Créer un dictionnaire avec toutes les valeurs
+    input_dict = {
+        'age': age,
+        'sex': sex_num,
+        'cp': cp_num,
+        'trestbps': trestbps,
+        'chol': chol,
+        'fbs': fbs_num,
+        'restecg': restecg_num,
+        'thalach': thalach,
+        'exang': exang_num,
+        'oldpeak': oldpeak,
+        'slope': slope_num,
+        'ca': ca,
+        'thal': thal_num
+    }
+    
+    # Garder uniquement les colonnes qui existent dans feature_names
+    input_dict_filtered = {k: v for k, v in input_dict.items() if k in feature_names}
+    
+    # Créer le DataFrame avec les bonnes colonnes
+    input_df = pd.DataFrame([list(input_dict_filtered.values())], 
+                            columns=list(input_dict_filtered.keys()))
+    
+    # Appliquer l'imputation et la normalisation
+    input_imputed = imputer_train.transform(input_df)
+    input_scaled = scaler_train.transform(input_imputed)
 
     if st.button("❤️ Prédire maintenant", use_container_width=True):
         model, _, _ = trained_models[model_choice]
@@ -475,13 +495,10 @@ with tab1:
             "Probabilité":f"{probability:.2%}"
         })
 
-        # Nouveau patient dataset
-        new_row = pd.DataFrame(
-            [[age,sex_num,cp_num,trestbps,chol,fbs_num,
-              restecg_num,thalach,exang_num,oldpeak,slope_num,ca,thal_num,
-              int(prediction)]],
-            columns=feature_names + ['target']
-        )
+        # Nouveau patient dataset (utiliser les features disponibles)
+        new_row_data = [input_dict[f] for f in feature_names] + [int(prediction)]
+        new_row = pd.DataFrame([new_row_data], columns=feature_names + ['target'])
+        
         if st.session_state.new_patients is None:
             st.session_state.new_patients = new_row
         else:
@@ -490,11 +507,7 @@ with tab1:
 
         # Stockage pour PDF
         st.session_state.last_prediction = {
-            "patient_data": {
-                'age':age,'sex':sex_num,'cp':cp_num,'trestbps':trestbps,
-                'chol':chol,'fbs':fbs_num,'restecg':restecg_num,'thalach':thalach,
-                'exang':exang_num,'oldpeak':oldpeak,'slope':slope_num,'ca':ca,'thal':thal_num
-            },
+            "patient_data": input_dict,
             "prediction":  int(prediction),
             "probability": float(probability),
             "model_name":  model_choice,
@@ -508,14 +521,14 @@ with tab1:
             else:
                 st.error("⚠️ Maladie cardiaque détectée")
             st.metric("Probabilité de risque", f"{probability:.2%}")
-            n_total_now = len(df_original) + len(st.session_state.new_patients)
+            n_total_now = len(df_original) + len(st.session_state.new_patients) if st.session_state.new_patients is not None else len(df_original)
             st.markdown(f"""
             <div style="background:#f0fff4;border:1px solid #c6f6d5;border-radius:12px;
                         padding:12px 16px;margin-top:10px;font-size:0.82rem;color:#22543d;">
               <span class="live-indicator"></span>
               <b>Dashboard mis à jour !</b><br>
               Total patients : <b>{n_total_now}</b>
-              ({len(st.session_state.new_patients)} nouveau(x))
+              ({len(st.session_state.new_patients) if st.session_state.new_patients is not None else 0} nouveau(x))
             </div>
             """, unsafe_allow_html=True)
 
@@ -807,7 +820,7 @@ with tab5:
     with col1:
         fx = st.selectbox("Variable X", feature_names, index=0)
     with col2:
-        fy = st.selectbox("Variable Y", feature_names, index=3)
+        fy = st.selectbox("Variable Y", feature_names, index=min(3, len(feature_names)-1))
 
     df_live = get_live_df()
     fig = go.Figure()
