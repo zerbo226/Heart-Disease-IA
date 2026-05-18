@@ -279,17 +279,50 @@ def load_data():
 
 @st.cache_data
 def train_models(df):
-    features = ['age','sex','cp','trestbps','chol','fbs','restecg',
-                'thalach','exang','oldpeak','slope','ca','thal']
-    X = df[features]
-    y = df['target']
+    # Liste complète des colonnes attendues
+    expected_features = ['age','sex','cp','trestbps','chol','fbs','restecg',
+                         'thalach','exang','oldpeak','slope','ca','thal']
+    
+    # Vérification des colonnes disponibles
+    available_features = [col for col in expected_features if col in df.columns]
+    
+    # Vérification que 'target' existe
+    if 'target' not in df.columns:
+        raise ValueError("La colonne 'target' est manquante dans le fichier CSV")
+    
+    # Afficher un warning si des colonnes sont manquantes (visible dans les logs Streamlit)
+    missing_cols = [col for col in expected_features if col not in df.columns]
+    if missing_cols:
+        st.warning(f"⚠️ Colonnes manquantes dans le CSV : {missing_cols}")
+        st.info(f"Colonnes disponibles : {df.columns.tolist()}")
+    
+    # Préparation des données avec les colonnes disponibles uniquement
+    X = df[available_features].copy()
+    y = df['target'].copy()
+    
+    # Suppression des colonnes entièrement vides
+    X = X.dropna(axis=1, how='all')
+    
+    # Mise à jour réelle des features après suppression
+    available_features = X.columns.tolist()
+    
+    # Gestion des valeurs manquantes
     imputer = SimpleImputer(strategy='median')
-    X = pd.DataFrame(imputer.fit_transform(X), columns=features)
+    X_imputed = imputer.fit_transform(X)
+    
+    # Création du DataFrame avec les colonnes disponibles
+    X = pd.DataFrame(X_imputed, columns=available_features)
+    
+    # Division entraînement/test
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y)
+    
+    # Normalisation
     scaler = StandardScaler()
     X_train_sc = scaler.fit_transform(X_train)
     X_test_sc  = scaler.transform(X_test)
+    
+    # Modèles
     models = {
         'Logistic Regression': LogisticRegression(max_iter=1000),
         'KNN':                 KNeighborsClassifier(),
@@ -298,6 +331,7 @@ def train_models(df):
         'Random Forest':       RandomForestClassifier(),
         'AdaBoost':            AdaBoostClassifier(),
     }
+    
     results, trained = [], {}
     for name, model in models.items():
         model.fit(X_train_sc, y_train)
@@ -312,12 +346,22 @@ def train_models(df):
             'AUC':      round(roc_auc_score(y_test,y_prob),4)
         })
         trained[name] = (model, y_prob, y_pred)
-    return pd.DataFrame(results), trained, scaler, imputer, X_test_sc, y_test, features
+    
+    # Retourner available_features au lieu de expected_features
+    return pd.DataFrame(results), trained, scaler, imputer, X_test_sc, y_test, available_features
 
+# Chargement des données
 df_original = load_data()
+
+# Affichage des colonnes pour debug (à retirer après)
+st.write("📊 **Colonnes disponibles dans le dataset :**")
+st.write(df_original.columns.tolist())
+
+# Calcul des bases pour les métriques
 AGE_BASE    = df_original['age'].mean()
 CHOL_BASE   = df_original['chol'].mean()
 
+# Entraînement des modèles
 results_df, trained_models, scaler_train, imputer_train, X_test_sc, y_test, feature_names = train_models(df_original)
 best_model = results_df.sort_values('AUC', ascending=False).iloc[0]['Modele']
 hex_colors = ['#e63946','#3498db','#00c853','#f39c12','#9b59b6','#1abc9c']
